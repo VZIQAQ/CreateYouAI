@@ -1,4 +1,4 @@
-# youAI
+# CreateYouAI
 
 Modular AI Skill repository. Build your own AI like stacking LEGO blocks.
 
@@ -12,45 +12,62 @@ A Skill is a set of instructions for AI. When a user says "I want to do X", the 
 
 Skill 是一份给 AI 看的说明书。用户说"我要做 X"，AI 读取对应的 Skill，就知道怎么帮用户实现。
 
-**Example / 举例**：用户说"我想给应用加语音识别"，AI 读取 `voice-recognition` Skill，就知道要安装什么、改哪些代码、怎么排查问题。
+---
+
+## How it works / 工作原理
+
+1. User describes what AI they want / 用户描述想做什么 AI
+2. AI scans available Skills / AI 扫描可用的 Skill
+3. AI picks the right combination / AI 挑选合适的组合
+4. AI helps build it step by step / AI 帮用户逐步构建
 
 ---
 
 ## Available Skills
 
-| Skill | Status | Description |
-|-------|--------|-------------|
-| [voice-recognition](skills/voice-recognition/) | ✅ Ready | Local speech recognition (4 recording solutions + funasr local model) / 本地语音识别（4 种录音方案 + funasr 本地模型） |
+| Skill | Category | Description |
+|-------|----------|-------------|
+| [ai-builder](skills/ai-builder/) | 🧩 meta | Scan skills and help users build their AI / 扫描仓库，帮用户挑选组合 Skill |
+| [voice-recognition](skills/audio/voice-recognition/) | 🎤 audio | Local speech recognition / 本地语音识别 |
+| [contribute-skill](skills/contribute-skill/) | 🧩 meta | Submit new skills to the repository / 向仓库提交新 Skill |
 
 ---
 
 ## Quick Start / 快速开始
 
-1. Find the Skill you need / 找到你需要的 Skill
-2. Give `SKILL.md` to your AI tool (paste, reference, or put in project directory) / 把 `SKILL.md` 给你的 AI 工具
-3. AI reads it and follows the instructions / AI 读取后按指引执行
+Tell your AI: "我想做一个 XX 的 AI" / 告诉你的 AI："我想做一个 XX 的 AI"
+
+The AI will read the `ai-builder` Skill and automatically pick the right combination from this repository.
+
+AI 会读取 `ai-builder` Skill，自动从仓库挑选合适的组合。
+
+---
+
+## Skill Categories / 分类
+
+```
+skills/
+├── audio/       🎤 语音、音频
+├── code/        💻 编程辅助
+├── data/        📊 数据处理
+├── file/        📁 文件操作
+├── web/         🌐 网络请求
+├── ui/          🖥️ 界面组件
+├── other/       📦 其他
+└── ai-builder/  🧩 元能力：帮用户组合 Skill
+```
 
 ---
 
 ## Contributing / 贡献
 
 1. Fork this repository / Fork 本仓库
-2. Write a new Skill following [SKILL-FORMAT.md](SKILL-FORMAT.md) / 按照 SKILL-FORMAT.md 写一个新 Skill
+2. Write a Skill following [SKILL-FORMAT.md](SKILL-FORMAT.md) / 按 SKILL-FORMAT.md 写 Skill
 3. Submit a PR / 提交 PR
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details. / 详见 CONTRIBUTING.md。
+Or tell your AI: "我想贡献一个 skill" / 或告诉你的 AI："我想贡献一个 skill"
 
----
-
-## Skill Format / Skill 格式
-
-See [SKILL-FORMAT.md](SKILL-FORMAT.md).
-
-```
-skills/<skill-name>/
-├── SKILL.md              # Required: instructions for AI / 必须：给 AI 的指令文档
-└── scripts/              # Optional: executable scripts / 可选：可执行脚本
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
