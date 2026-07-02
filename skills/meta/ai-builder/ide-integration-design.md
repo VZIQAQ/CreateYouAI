@@ -168,7 +168,8 @@ class FileOperations {
   
   private validatePath(filePath: string): string {
     const fullPath = path.resolve(this.rootPath, filePath);
-    if (!fullPath.startsWith(this.rootPath)) {
+    const relative = path.relative(this.rootPath, fullPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`路径越界: ${filePath}`);
     }
     return fullPath;
