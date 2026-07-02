@@ -21,7 +21,7 @@ description: >
 | 密钥认证 | 支持 SSH 密钥文件 |
 | 命令执行 | 执行远程命令并返回输出 |
 | 文件传输 | 支持 SFTP 文件上传下载 |
-| 连接池 | 复用连接提高效率 |
+| 批量执行 | 多主机并行执行命令 |
 
 ## 前置条件
 
@@ -47,7 +47,8 @@ python -c "import paramiko; print('paramiko 版本:', paramiko.__version__)"
 ```python
 import paramiko
 import socket
-from typing import Optional, Dict, Tuple
+import os
+from typing import Optional, Dict, Any
 
 class SSHClient:
     """SSH 客户端"""
@@ -75,6 +76,13 @@ class SSHClient:
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
+            # 校验密钥文件存在性
+            if self.key_filename and not os.path.exists(self.key_filename):
+                raise FileNotFoundError(f"密钥文件不存在: {self.key_filename}")
+            
+            # 空密码视为未提供
+            password = self.password if self.password else None
+            
             connect_kwargs = {
                 "hostname": self.host,
                 "port": self.port,
@@ -84,8 +92,8 @@ class SSHClient:
             
             if self.key_filename:
                 connect_kwargs["key_filename"] = self.key_filename
-            elif self.password:
-                connect_kwargs["password"] = self.password
+            elif password:
+                connect_kwargs["password"] = password
             else:
                 raise ValueError("必须提供密码或密钥文件")
             
@@ -105,17 +113,12 @@ class SSHClient:
         self, 
         command: str, 
         timeout: int = 30
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
-        执行远程命令。
+        执行远程命令
         
         Returns:
-            {
-                "success": bool,
-                "stdout": str,
-                "stderr": str,
-                "exit_code": int
-            }
+            {"success": bool, "stdout": str, "stderr": str, "exit_code": int}
         """
         if not self.client:
             return {
@@ -153,6 +156,62 @@ class SSHClient:
                 "exit_code": -1
             }
     
+    def execute_sudo(
+        self,
+        command: str,
+        password: str,
+        timeout: int = 30
+    ) -> Dict[str, Any]:
+        """
+        执行 sudo 命令（交互式）
+        
+        Args:
+            command: 要执行的命令
+            password: sudo 密码
+            timeout: 超时时间
+        """
+        if not self.client:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "未建立连接",
+                "exit_code": -1
+            }
+        
+        try:
+            # 使用 -S 从 stdin 读取密码
+            stdin, stdout, stderr = self.client.exec_command(
+                f"echo '{password}' | sudo -S {command}",
+                timeout=timeout
+            )
+            
+            exit_code = stdout.channel.recv_exit_status()
+            
+            # 清除 sudo 输出中的密码提示
+            stdout_text = stdout.read().decode('utf-8', errors='replace')
+            stderr_text = stderr.read().decode('utf-8', errors='replace')
+            
+            return {
+                "success": exit_code == 0,
+                "stdout": stdout_text,
+                "stderr": stderr_text.replace("[sudo] password for ...: ", ""),
+                "exit_code": exit_code
+            }
+        except socket.timeout:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "命令执行超时",
+                "exit_code": -1
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": str(e),
+                "exit_code": -1
+            }
+    
     def __enter__(self):
         self.connect()
         return self
@@ -160,49 +219,7 @@ class SSHClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
 
-# 使用示例
-if __name__ == "__main__":
-    with SSHClient(
-        host="192.168.1.100",
-        username="admin",
-        password="your_password"
-    ) as ssh:
-        result = ssh.execute("uname -a")
-        if result["success"]:
-            print("系统信息:", result["stdout"])
-        else:
-            print("执行失败:", result["stderr"])
-        
-        result = ssh.execute("df -h")
-        print("磁盘使用:\n", result["stdout"])
-```
 
-### 密钥认证
-
-```python
-import os
-
-def create_key_example():
-    """密钥认证示例"""
-    ssh = SSHClient(
-        host="192.168.1.100",
-        username="admin",
-        key_filename=os.path.expanduser("~/.ssh/id_rsa")
-    )
-    
-    if ssh.connect():
-        result = ssh.execute("echo '密钥认证成功'")
-        print(result["stdout"])
-        ssh.disconnect()
-
-# 使用示例
-if __name__ == "__main__":
-    create_key_example()
-```
-
-### SFTP 文件传输
-
-```python
 class SFTPClient:
     """SFTP 文件传输客户端"""
     
@@ -219,24 +236,62 @@ class SFTPClient:
         """关闭 SFTP 连接"""
         if self.sftp:
             self.sftp.close()
+            self.sftp = None
     
-    def upload(self, local_path: str, remote_path: str) -> bool:
+    def __enter__(self):
+        self.connect()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+    
+    def upload(
+        self, 
+        local_path: str, 
+        remote_path: str
+    ) -> Dict[str, Any]:
         """上传文件"""
         try:
             self.sftp.put(local_path, remote_path)
-            return True
+            file_size = os.path.getsize(local_path)
+            return {
+                "success": True,
+                "bytes_transferred": file_size,
+                "error": None
+            }
+        except FileNotFoundError as e:
+            return {
+                "success": False,
+                "bytes_transferred": 0,
+                "error": str(e)
+            }
         except Exception as e:
-            print(f"上传失败: {e}")
-            return False
+            return {
+                "success": False,
+                "bytes_transferred": 0,
+                "error": str(e)
+            }
     
-    def download(self, remote_path: str, local_path: str) -> bool:
+    def download(
+        self, 
+        remote_path: str, 
+        local_path: str
+    ) -> Dict[str, Any]:
         """下载文件"""
         try:
             self.sftp.get(remote_path, local_path)
-            return True
+            file_size = os.path.getsize(local_path)
+            return {
+                "success": True,
+                "bytes_transferred": file_size,
+                "error": None
+            }
         except Exception as e:
-            print(f"下载失败: {e}")
-            return False
+            return {
+                "success": False,
+                "bytes_transferred": 0,
+                "error": str(e)
+            }
     
     def list_dir(self, remote_path: str = ".") -> list:
         """列出目录内容"""
@@ -246,49 +301,29 @@ class SFTPClient:
             print(f"列出目录失败: {e}")
             return []
 
-# 使用示例
-if __name__ == "__main__":
-    ssh = SSHClient(
-        host="192.168.1.100",
-        username="admin",
-        password="your_password"
-    )
-    
-    if ssh.connect():
-        sftp = SFTPClient(ssh)
-        sftp.connect()
-        
-        sftp.upload("local_file.txt", "/tmp/remote_file.txt")
-        
-        files = sftp.list_dir("/tmp")
-        print("远程 /tmp 目录:", files)
-        
-        sftp.disconnect()
-        ssh.disconnect()
-```
-
-### 批量命令执行
-
-```python
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
 
 class BatchSSHExecutor:
     """批量 SSH 命令执行器"""
     
-    def __init__(self, hosts: List[Dict]):
+    def __init__(self, hosts: list):
         """
         Args:
             hosts: [{"host": "...", "username": "...", "password": "..."}, ...]
         """
         self.hosts = hosts
+        # 前置校验：确保每个 host_config 都有 "host" 键
+        for i, h in enumerate(self.hosts):
+            if "host" not in h:
+                raise ValueError(f"第 {i+1} 个 host_config 缺少 'host' 键")
     
     def execute_on_all(
         self, 
         command: str, 
         max_workers: int = 5
-    ) -> List[Dict]:
+    ) -> list:
         """在所有主机上执行命令"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         results = []
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -296,11 +331,19 @@ class BatchSSHExecutor:
             for host_config in self.hosts:
                 ssh = SSHClient(**host_config)
                 future = executor.submit(self._execute_on_host, ssh, command)
-                futures[future] = host_config["host"]
+                futures[future] = host_config.get("host", "unknown")
             
             for future in as_completed(futures):
                 host = futures[future]
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {
+                        "success": False,
+                        "stdout": "",
+                        "stderr": str(e),
+                        "exit_code": -1
+                    }
                 results.append({
                     "host": host,
                     **result
@@ -308,11 +351,13 @@ class BatchSSHExecutor:
         
         return results
     
-    def _execute_on_host(self, ssh: SSHClient, command: str) -> Dict:
+    def _execute_on_host(self, ssh: SSHClient, command: str) -> Dict[str, Any]:
         """在单个主机上执行命令"""
         if ssh.connect():
-            result = ssh.execute(command)
-            ssh.disconnect()
+            try:
+                result = ssh.execute(command)
+            finally:
+                ssh.disconnect()
             return result
         return {
             "success": False,
@@ -321,96 +366,86 @@ class BatchSSHExecutor:
             "exit_code": -1
         }
 
+
 # 使用示例
 if __name__ == "__main__":
+    # 示例 1：基础连接
+    with SSHClient(
+        host="192.168.1.100",
+        username="admin",
+        password="your_password"
+    ) as ssh:
+        result = ssh.execute("uname -a")
+        if result["success"]:
+            print("系统信息:", result["stdout"])
+    
+    # 示例 2：密钥认证
+    import os
+    ssh = SSHClient(
+        host="192.168.1.100",
+        username="admin",
+        key_filename=os.path.expanduser("~/.ssh/id_rsa")
+    )
+    if ssh.connect():
+        result = ssh.execute("echo '密钥认证成功'")
+        print(result["stdout"])
+        ssh.disconnect()
+    
+    # 示例 3：SFTP
+    with SSHClient(
+        host="192.168.1.100",
+        username="admin",
+        password="your_password"
+    ) as ssh:
+        with SFTPClient(ssh) as sftp:
+            sftp.upload("local_file.txt", "/tmp/remote_file.txt")
+            files = sftp.list_dir("/tmp")
+            print("远程 /tmp 目录:", files)
+    
+    # 示例 4：sudo 执行
+    with SSHClient(
+        host="192.168.1.100",
+        username="admin",
+        password="your_password"
+    ) as ssh:
+        result = ssh.execute_sudo("apt update", password="sudo_password")
+        print(result["stdout"])
+    
+    # 示例 5：批量执行
     hosts = [
         {"host": "192.168.1.101", "username": "admin", "password": "pass1"},
         {"host": "192.168.1.102", "username": "admin", "password": "pass2"},
     ]
-    
     batch = BatchSSHExecutor(hosts)
     results = batch.execute_on_all("uptime")
-    
     for r in results:
         status = "✓" if r["success"] else "✗"
         print(f"{status} {r['host']}: {r['stdout'].strip()}")
 ```
 
-### 服务器状态检查
-
-```python
-def get_server_status(ssh: SSHClient) -> Dict:
-    """获取服务器综合状态"""
-    commands = {
-        "system": "uname -a",
-        "uptime": "uptime",
-        "cpu": "lscpu | grep 'Model name' || cat /proc/cpuinfo | grep 'model name' | head -1",
-        "memory": "free -h | grep Mem",
-        "disk": "df -h / | tail -1",
-        "load": "cat /proc/loadavg",
-    }
-    
-    status = {}
-    for key, cmd in commands.items():
-        result = ssh.execute(cmd)
-        if result["success"]:
-            status[key] = result["stdout"].strip()
-    
-    return status
-
-# 使用示例
-if __name__ == "__main__":
-    with SSHClient("192.168.1.100", "admin", password="pass") as ssh:
-        status = get_server_status(ssh)
-        for key, value in status.items():
-            print(f"{key}: {value}")
-```
-
 ## 问题排查
 
-### 问题 1：连接超时
-
-**原因**：网络不通或 SSH 端口不对。
-
-**解决**：
-```bash
-# 检查网络连通性
-ping 192.168.1.100
-
-# 检查 SSH 端口
-nc -zv 192.168.1.100 22
-```
-
-### 问题 2：认证失败
-
-**原因**：密码错误或密钥权限不对。
-
-**解决**：
-```bash
-# 检查密钥权限（Linux/Mac）
-chmod 600 ~/.ssh/id_rsa
-
-# 测试 SSH 连接
-ssh -v user@host
-```
-
-### 问题 3：命令执行无输出
-
-**原因**：命令执行时间过长或产生大量输出。
-
-**解决**：增大 timeout 参数，或使用异步执行。
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| 连接超时 | 网络不通或 SSH 端口不对 | `ping` 检查网络，`nc -zv host 22` 检查端口 |
+| 认证失败 | 密码错误或密钥权限不对 | `chmod 600 ~/.ssh/id_rsa`，`ssh -v user@host` |
+| 连接被拒绝 | SSH 服务未启动 | 检查服务器 SSH 服务状态 |
+| 权限被拒绝 | 密钥未授权 | 将公钥添加到 `~/.ssh/authorized_keys` |
+| 命令执行无输出 | 命令时间过长 | 增加 timeout 参数 |
+| 密钥文件不存在 | 路径错误 | 检查 key_filename 路径 |
 
 ## 依赖
 
-| 依赖 | 版本 | 类型 |
+| 依赖 | 版本 | 用途 |
 |------|------|------|
-| Python | 3.8+ | 必需 |
-| paramiko | ≥3.0.0 | 必需 |
+| Python | 3.8+ | 运行环境 |
+| paramiko | ≥3.0.0 | SSH 客户端 |
 
 ## Agent 执行规范
 
-### 核心约束
-- **密钥安全**：不要在代码中硬编码密码
+- **密码安全**：密码通过环境变量传入，不要硬编码
+- **密钥权限**：生产环境使用 `WarningPolicy` 或预加载 `known_hosts`
 - **超时设置**：始终设置合理的超时时间
-- **错误处理**：捕获并处理所有连接异常
 - **连接关闭**：使用后必须关闭连接
+- **并发限制**：批量执行时限制并发数，避免触发服务器限制
+- **文件校验**：密钥文件使用前检查是否存在
