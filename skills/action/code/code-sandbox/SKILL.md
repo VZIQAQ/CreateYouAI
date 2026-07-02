@@ -165,6 +165,8 @@ def execute_in_docker(
                 docker_cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout + 5
             )
             
@@ -290,6 +292,8 @@ def execute_with_sandbox_exec(
                 sandbox_cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout
             )
             
@@ -440,6 +444,8 @@ def execute_with_bubblewrap(
                 bwrap_cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout
             )
             
@@ -533,6 +539,8 @@ def execute_code(
             [cmd, temp_path],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout
         )
         
