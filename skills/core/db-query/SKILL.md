@@ -81,8 +81,10 @@ class DatabaseManager:
         cur = self.conn.cursor()
         try:
             yield cur
-            # 仅对写操作 commit，SELECT 不需要
-            if cur.description is None:
+            # 对写操作 commit（rowcount >= 0 表示有影响行，SELECT 为 -1）
+            if cur.rowcount == -1 and cur.description is not None:
+                pass  # SELECT，不 commit
+            else:
                 self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -115,7 +117,8 @@ class DatabaseManager:
     
     def get_table_info(self, table: str) -> List[Dict]:
         """获取表结构"""
-        return self.execute(f"PRAGMA table_info({table})")
+        safe_table = table.replace('"', '""')
+        return self.execute(f'PRAGMA table_info("{safe_table}")')
     
     def get_row_count(self, table: str) -> int:
         """获取表行数"""
@@ -234,7 +237,7 @@ class SafeQueryExecutor:
     
     # 仅匹配独立关键字（不在字符串中的）
     DANGEROUS_PATTERN = re.compile(
-        r'\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|EXEC|EXECUTE)\b',
+        r'\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|EXEC|EXECUTE|UPDATE|INSERT)\b',
         re.IGNORECASE
     )
     
@@ -262,8 +265,8 @@ class SafeQueryExecutor:
         if not self.is_select_query(query):
             return False, "仅支持 SELECT 查询"
         
-        # 检查多语句（排除字符串内的分号）
-        cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", '', query)
+        # 检查多语句（排除字符串内的分号，忽略末尾分号）
+        cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", '', query).rstrip().rstrip(';')
         if ';' in cleaned:
             return False, "不支持多语句执行"
         
@@ -293,8 +296,8 @@ class SafeQueryExecutor:
             }
         
         try:
-            # 仅在查询无 LIMIT 时追加
-            if "LIMIT" not in query.upper():
+            # 仅在查询无 LIMIT 时追加（使用正则避免误匹配表名/字段名）
+            if not re.search(r'\bLIMIT\b', query, re.IGNORECASE):
                 limited_query = f"{query.rstrip().rstrip(';')} LIMIT {max_rows}"
             else:
                 limited_query = query
