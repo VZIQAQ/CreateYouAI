@@ -110,6 +110,43 @@ find skills/ -name "SKILL.md" -type f
 
 ---
 
+## 架构指南
+
+当用户确定好 Skill 组合后，需要细化设计时，加载对应的架构指南。
+
+### 指南列表
+
+| 指南 | 文件 | 用途 |
+|------|------|------|
+| 工具系统 | `guides/tool-system-builder.md` | 设计工具注册、执行、权限 |
+| 多 Agent 协调 | `guides/multi-agent-coordinator.md` | 设计多 Agent 协作和任务分发 |
+| 记忆系统 | `guides/memory-system-design.md` | 设计分层记忆存储和检索 |
+| 查询引擎 | `guides/query-engine-design.md` | 设计 LLM 调用和工具循环 |
+| Skill 系统 | `guides/skill-system-design.md` | 设计 Skill 加载和执行 |
+| 状态管理 | `guides/state-management-design.md` | 设计应用状态存储和同步 |
+| 权限系统 | `guides/permission-system-design.md` | 设计权限检查和规则 |
+| 命令系统 | `guides/command-system-design.md` | 设计命令注册和解析 |
+| 服务层 | `guides/service-layer-design.md` | 设计外部服务调用 |
+| IDE 集成 | `guides/ide-integration-design.md` | 设计 IDE 桥接和扩展 |
+
+### 使用时机
+
+```
+用户确定 Skill 组合后
+    ↓
+问用户：需要细化哪个模块的设计？
+    ↓
+加载对应指南 → 给出设计建议 → 帮用户实现
+```
+
+### 注意
+
+- 架构指南是**设计模式**，需要根据用户项目适配
+- 不是所有场景都需要加载指南
+- 用户说"直接开始"就跳过指南，直接实现
+
+---
+
 ## 附录：构建 AI 应用需要考虑的内容
 
 当用户不确定要做什么 AI 时，用以下框架帮他梳理思路。
