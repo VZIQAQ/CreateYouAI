@@ -4,7 +4,12 @@ layer: action
 category: file
 status: unverified
 description: CSV 和 JSON 格式互相转换，支持大文件流式处理
-version: 1.1
+version: 1.2
+requirements:
+  - name: ijson
+    version: ">=3.0"
+    optional: true
+    description: "真正的流式 JSON 解析，未安装时 JSON→CSV 流式将无法使用"
 ---
 
 # CSV/JSON 数据转换
@@ -144,86 +149,46 @@ class CSVJSONConverter:
         """
         流式 JSON 转 CSV（适用于大文件）
         
-        使用 ijson 实现真正的流式解析，不加载整个文件到内存。
-        如果未安装 ijson，则回退到分块读取。
+        要求输入为标准 JSON 数组格式: [{...}, {...}, ...]
+        需要安装 ijson: pip install ijson
         """
-        total_rows = 0
-        
         try:
-            # 尝试使用 ijson 实现真正的流式解析
             import ijson
-            
-            with open(input_file, 'r', encoding=self.encoding) as infile, \
-                 open(output_file, 'w', encoding=self.encoding, newline='') as outfile:
-                
-                # 第一遍：获取所有字段名
-                parser = ijson.items(infile, 'item')
-                first_item = None
-                for item in parser:
-                    first_item = item
-                    break
-                
-                if first_item is None:
-                    # 空数组
-                    return 0
-                
-                fieldnames = list(first_item.keys())
-                writer = csv.DictWriter(outfile, fieldnames=fieldnames, delimiter=self.delimiter)
-                writer.writeheader()
-                writer.writerow(first_item)
-                total_rows = 1
-                
-                # 第二遍：写入剩余数据
-                with open(input_file, 'r', encoding=self.encoding) as infile2:
-                    parser = ijson.items(infile2, 'item')
-                    next(parser)  # 跳过第一个
-                    chunk = []
-                    for item in parser:
-                        chunk.append(item)
-                        if len(chunk) >= chunk_size:
-                            writer.writerows(chunk)
-                            total_rows += len(chunk)
-                            chunk = []
-                    if chunk:
-                        writer.writerows(chunk)
-                        total_rows += len(chunk)
-            
-            return total_rows
-            
         except ImportError:
-            # ijson 未安装，回退到分块读取（仍比 json.load 更高效）
-            return self._json_to_csv_chunked(input_file, output_file, chunk_size)
-    
-    def _json_to_csv_chunked(
-        self,
-        input_file: str,
-        output_file: str,
-        chunk_size: int = 1000
-    ) -> int:
-        """分块 JSON 转 CSV（回退方案）"""
+            raise ImportError(
+                "流式 JSON→CSV 需要安装 ijson：pip install ijson\n"
+                "如果文件较小，可以使用 json_to_csv() 代替"
+            )
+        
         total_rows = 0
         
-        # 使用生成器逐行读取
-        with open(input_file, 'r', encoding=self.encoding) as f:
-            content = f.read()
-        
-        # 手动解析 JSON 数组
-        data = json.loads(content)
-        
-        if isinstance(data, dict):
-            data = [data]
-        
-        if not data:
-            return 0
-        
-        fieldnames = list(data[0].keys())
-        
-        with open(output_file, 'w', encoding=self.encoding, newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=self.delimiter)
-            writer.writeheader()
+        with open(input_file, 'r', encoding=self.encoding) as infile, \
+             open(output_file, 'w', encoding=self.encoding, newline='') as outfile:
             
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i:i + chunk_size]
+            items = ijson.items(infile, 'item')
+            
+            # 获取第一个 item 确定字段名
+            try:
+                first_item = next(items)
+            except StopIteration:
+                # 空数组，创建空文件并返回
+                return 0
+            
+            fieldnames = list(first_item.keys())
+            writer = csv.DictWriter(outfile, fieldnames=fieldnames, delimiter=self.delimiter)
+            writer.writeheader()
+            writer.writerow(first_item)
+            total_rows = 1
+            
+            # 继续同一个生成器，无需重新打开文件
+            chunk = []
+            for item in items:
+                chunk.append(item)
+                if len(chunk) >= chunk_size:
+                    writer.writerows(chunk)
+                    total_rows += len(chunk)
+                    chunk = []
+            if chunk:
                 writer.writerows(chunk)
                 total_rows += len(chunk)
         
@@ -244,7 +209,7 @@ class CSVJSONConverter:
             direction: 转换方向 "csv2json" 或 "json2csv"
         
         Returns:
-            {输入文件: 输出文件} 映射
+            {输入文件: 输出文件} 映射，错误记录在 "_errors" 键中
         
         Raises:
             ValueError: direction 参数无效
@@ -295,7 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("output", help="输出文件或目录")
     parser.add_argument("--encoding", default="utf-8")
     parser.add_argument("--delimiter", default=",")
-    parser.add_argument("--streaming", action="store_true")
+    parser.add_argument("--streaming", action="store_true", help="流式处理（需要 ijson）")
     
     args = parser.parse_args()
     
@@ -304,20 +269,32 @@ if __name__ == "__main__":
         delimiter=args.delimiter
     )
     
-    if args.direction == "csv2json":
-        if args.streaming:
-            rows = converter.csv_to_json_streaming(args.input, args.output)
-            print(f"转换完成: {rows} 行")
-        else:
-            data = converter.csv_to_json(args.input, args.output)
-            print(f"转换完成: {len(data)} 条记录")
+    # 检测输入是文件还是目录
+    if os.path.isdir(args.input):
+        # 目录批量转换
+        results = converter.convert_directory(args.input, args.output, args.direction)
+        success_count = len([k for k in results if k != "_errors"])
+        error_count = len(results.get("_errors", []))
+        print(f"批量转换完成: {success_count} 个文件成功, {error_count} 个文件失败")
+        if error_count > 0:
+            for err in results["_errors"]:
+                print(f"  失败: {err['file']} - {err['error']}")
     else:
-        if args.streaming:
-            rows = converter.json_to_csv_streaming(args.input, args.output)
-            print(f"转换完成: {rows} 行")
+        # 单文件转换
+        if args.direction == "csv2json":
+            if args.streaming:
+                rows = converter.csv_to_json_streaming(args.input, args.output)
+                print(f"转换完成: {rows} 行")
+            else:
+                data = converter.csv_to_json(args.input, args.output)
+                print(f"转换完成: {len(data)} 条记录")
         else:
-            data = converter.json_to_csv(args.input, args.output)
-            print(f"转换完成: {len(data)} 条记录")
+            if args.streaming:
+                rows = converter.json_to_csv_streaming(args.input, args.output)
+                print(f"转换完成: {rows} 行")
+            else:
+                data = converter.json_to_csv(args.input, args.output)
+                print(f"转换完成: {len(data)} 条记录")
 ```
 
 ## 使用示例
