@@ -139,7 +139,13 @@ class MemoryExtractor:
         return knowledge
     
     def _extract_people(self, text: str) -> List[str]:
-        """提取人名"""
+        """提取人名
+        
+        注意：基于规则提取，有限制：
+        - 中文人名需要后面跟"说/认为/表示"等动词
+        - 并列人名（如"张三和李四"）可能漏提取
+        - 如需高精度，请使用 extract_with_llm()
+        """
         patterns = [
             r'([A-Z][a-z]+ [A-Z][a-z]+)',
             r'([\u4e00-\u9fff]{2,4})(?:说|认为|表示|提到|告诉)',
@@ -245,16 +251,18 @@ from typing import Optional, Dict, List
 def extract_with_llm(
     text: str,
     extraction_type: str = "all",
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    model: str = "gpt-4o-mini"
 ) -> Dict:
     """
-    使用 LLM 进行高级记忆提取。
+    使用 LLM 进行高级记忆提取
     
     Args:
         text: 输入文本
         extraction_type: 提取类型 (facts/events/knowledge/all)
         api_key: OpenAI API Key
-        
+        model: 模型名称（支持 OpenAI 兼容 API）
+    
     Returns:
         结构化的提取结果
     """
@@ -279,12 +287,20 @@ def extract_with_llm(
     "summary": "一句话总结"
 }}"""
     
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        response_format={"type": "json_object"}
-    )
+    # 尝试使用 response_format，不支持时 fallback
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+    except Exception:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
     
     import json
     return json.loads(response.choices[0].message.content)
