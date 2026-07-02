@@ -21,6 +21,12 @@ Skill 是一份给 AI 看的说明书。用户说"我要做 X"，AI 读取对应
 3. AI picks the right combination / AI 挑选合适的组合
 4. AI helps build it step by step / AI 帮用户逐步构建
 
+## Ideas / 有想法？
+
+Have an idea for an AI skill but can't build it yourself? Submit an idea and let the community build it.
+
+有 AI 想法但自己不会写？去 [ideas/](ideas/) 提想法，让社区帮你实现。
+
 ---
 
 ## Available Skills
