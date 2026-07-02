@@ -2,6 +2,7 @@
 name: 代码沙箱
 layer: action
 category: code
+version: 1.1
 description: >
   在隔离环境中安全执行 Python/Node.js 代码。
   当用户需要运行不受信任的代码、测试代码片段、执行用户提供的脚本时触发。
@@ -21,6 +22,7 @@ description: >
 | 文件系统隔离 | 限制读写路径 |
 | 网络隔离 | 限制网络访问 |
 | 资源限制 | 内存、CPU、超时 |
+| 输出限制 | 防止内存炸弹 |
 | 多平台支持 | macOS / Linux / Docker |
 
 ## 方案选择
@@ -55,7 +57,6 @@ ELSE:
 | Node.js | 14+ | 所有 | 执行 JavaScript（可选） |
 | Docker | 20+ | 方案一 | 容器隔离 |
 | bubblewrap | 0.4+ | 方案三 | Linux 沙箱 |
-| socat | 1.7+ | 方案三 | 网络代理 |
 
 ---
 
@@ -79,6 +80,8 @@ docker pull python:3.12-slim
 import subprocess
 import tempfile
 import os
+import time
+import uuid
 from dataclasses import dataclass
 
 @dataclass
@@ -96,6 +99,7 @@ def execute_in_docker(
     timeout: int = 10,
     memory_limit: str = "100m",
     network: bool = False,
+    max_output_size: int = 1024 * 1024,
     writable_paths: list = None
 ) -> ExecutionResult:
     """
@@ -107,11 +111,14 @@ def execute_in_docker(
         timeout: 超时时间（秒）
         memory_limit: 内存限制
         network: 是否允许网络
+        max_output_size: 最大输出大小（字节）
         writable_paths: 可写路径列表
     
     Returns:
         ExecutionResult 对象
     """
+    container_name = f"sandbox-{uuid.uuid4().hex[:8]}"
+    
     with tempfile.TemporaryDirectory() as tmpdir:
         # 写入代码文件
         ext = ".py" if language == "python" else ".js"
@@ -126,11 +133,13 @@ def execute_in_docker(
         # 构建 Docker 命令
         docker_cmd = [
             "docker", "run", "--rm",
-            "--memory", memory_limit,           # 内存限制
-            "--cpus", "1",                      # CPU 限制
-            "--read-only",                      # 只读根文件系统
-            "--tmpfs", "/tmp:size=100m",        # 可写临时目录
-            "-v", f"{tmpdir}:/code:ro",         # 代码只读挂载
+            "--name", container_name,
+            "--memory", memory_limit,
+            "--cpus", "1",
+            "--read-only",
+            "--tmpfs", "/tmp:size=100m",
+            "-v", f"{tmpdir}:/code:ro",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
         ]
         
         # 网络控制
@@ -144,34 +153,40 @@ def execute_in_docker(
         
         # 安全选项
         docker_cmd.extend([
-            "--security-opt", "no-new-privileges",  # 禁止提权
-            "--cap-drop", "ALL",                     # 删除所有 capabilities
-            "--cap-add", "NET_BIND_SERVICE",         # 仅保留必要的
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
             image, cmd, f"/code/code{ext}"
         ])
         
         try:
-            import time
             start = time.time()
             
             result = subprocess.run(
                 docker_cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout + 5  # 给 Docker 额外 5 秒
+                timeout=timeout + 5
             )
             
             elapsed = (time.time() - start) * 1000
             
+            stdout = result.stdout[:max_output_size] if result.stdout else ""
+            stderr = result.stderr[:max_output_size] if result.stderr else ""
+            
             return ExecutionResult(
                 success=result.returncode == 0,
-                stdout=result.stdout,
-                stderr=result.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 return_code=result.returncode,
                 execution_time_ms=elapsed
             )
             
         except subprocess.TimeoutExpired:
+            # 清理僵尸容器
+            subprocess.run(["docker", "kill", container_name], 
+                         capture_output=True, timeout=5)
+            subprocess.run(["docker", "rm", "-f", container_name], 
+                         capture_output=True, timeout=5)
             return ExecutionResult(
                 success=False,
                 stdout="",
@@ -183,7 +198,7 @@ def execute_in_docker(
             return ExecutionResult(
                 success=False,
                 stdout="",
-                stderr=str(e) if isinstance(e, Exception) else String(e),
+                stderr=str(e),
                 return_code=-1,
                 execution_time_ms=0
             )
@@ -196,7 +211,7 @@ result = execute_in_docker(
     memory_limit="100m",
     network=False
 )
-print(result.stdout)  # 只能看到容器内的文件
+print(result.stdout)
 ```
 
 ### Docker 安全特性
@@ -208,7 +223,8 @@ print(result.stdout)  # 只能看到容器内的文件
 | `--read-only` | 只读文件系统 |
 | `--cap-drop ALL` | 删除所有 capabilities |
 | `--security-opt no-new-privileges` | 禁止提权 |
-| `-v ... :ro` | 只读挂载 |
+| `PYTHONDONTWRITEBYTECODE=1` | 禁止写 .pyc |
+| 容器命名 + 超时清理 | 防止僵尸容器 |
 
 ---
 
@@ -227,6 +243,7 @@ macOS 内置的沙箱机制，Claude Code 在 macOS 上使用此方案。
 import subprocess
 import tempfile
 import os
+import time
 from dataclasses import dataclass
 
 @dataclass
@@ -241,37 +258,25 @@ def execute_with_sandbox_exec(
     code: str,
     language: str = "python",
     timeout: int = 10,
+    max_output_size: int = 1024 * 1024,
     writable_dirs: list = None
 ) -> ExecutionResult:
     """
     使用 macOS sandbox-exec 执行代码
-    
-    Args:
-        code: 代码
-        language: "python" 或 "node"
-        timeout: 超时时间
-        writable_dirs: 可写目录列表
-    
-    Returns:
-        ExecutionResult 对象
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 写入代码文件
         ext = ".py" if language == "python" else ".js"
         code_file = os.path.join(tmpdir, f"code{ext}")
         with open(code_file, 'w') as f:
             f.write(code)
         
-        # 生成 sandbox profile
         profile = generate_sandbox_profile(writable_dirs or [tmpdir])
         profile_file = os.path.join(tmpdir, "sandbox.sb")
         with open(profile_file, 'w') as f:
             f.write(profile)
         
-        # 选择命令
         cmd = "python" if language == "python" else "node"
         
-        # 构建命令
         sandbox_cmd = [
             "sandbox-exec",
             "-f", profile_file,
@@ -279,7 +284,6 @@ def execute_with_sandbox_exec(
         ]
         
         try:
-            import time
             start = time.time()
             
             result = subprocess.run(
@@ -291,10 +295,13 @@ def execute_with_sandbox_exec(
             
             elapsed = (time.time() - start) * 1000
             
+            stdout = result.stdout[:max_output_size] if result.stdout else ""
+            stderr = result.stderr[:max_output_size] if result.stderr else ""
+            
             return ExecutionResult(
                 success=result.returncode == 0,
-                stdout=result.stdout,
-                stderr=result.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 return_code=result.returncode,
                 execution_time_ms=elapsed
             )
@@ -311,7 +318,7 @@ def execute_with_sandbox_exec(
             return ExecutionResult(
                 success=False,
                 stdout="",
-                stderr=str(e) if isinstance(e, Exception) else String(e),
+                stderr=str(e),
                 return_code=-1,
                 execution_time_ms=0
             )
@@ -320,43 +327,29 @@ def generate_sandbox_profile(writable_dirs: list) -> str:
     """
     生成 macOS sandbox-exec profile
     
-    基于 Claude Code 的 seatbelt 配置
+    注意：(deny default) 必须在最前面，不能有 (allow default)
     """
-    # 默认拒绝所有操作
-    deny_rules = [
+    rules = [
+        '(version 1)',
         '(deny default)',
         # 允许读取系统库
         '(allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library"))',
-        # 允许读取用户目录
-        '(allow file-read* (subpath "/Users"))',
         # 允许读取临时目录
         '(allow file-read* (subpath "/tmp"))',
+        # 允许写入指定目录
     ]
     
-    # 允许写入指定目录
-    write_rules = []
     for dir_path in writable_dirs:
-        write_rules.append(f'(allow file-write* (subpath "{dir_path}"))')
+        rules.append(f'(allow file-write* (subpath "{dir_path}"))')
     
-    # 网络限制（可选）
-    network_rules = [
-        '(deny network*)',  # 禁止网络
-        # '(allow network*)',  # 允许网络（取消注释以启用）
-    ]
+    # 网络禁止
+    rules.append('(deny network*)')
     
     # 进程限制
-    process_rules = [
-        '(deny process*)',
-        '(allow process-exec)',
-    ]
+    rules.append('(deny process*)')
+    rules.append('(allow process-exec)')
     
-    # 组合 profile
-    profile = """
-(version 1)
-(allow default)
-""" + '\n'.join(deny_rules) + '\n' + '\n'.join(write_rules) + '\n' + '\n'.join(network_rules)
-    
-    return profile
+    return '\n'.join(rules)
 ```
 
 ---
@@ -371,9 +364,6 @@ Linux 上的轻量沙箱，Claude Code 在 Linux 上使用此方案。
 # 安装 bubblewrap
 sudo apt install bubblewrap  # Debian/Ubuntu
 sudo dnf install bubblewrap  # Fedora
-
-# 安装 socat（网络代理）
-sudo apt install socat
 ```
 
 ### 实现
@@ -382,6 +372,7 @@ sudo apt install socat
 import subprocess
 import tempfile
 import os
+import time
 from dataclasses import dataclass
 
 @dataclass
@@ -396,60 +387,53 @@ def execute_with_bubblewrap(
     code: str,
     language: str = "python",
     timeout: int = 10,
+    max_output_size: int = 1024 * 1024,
     network: bool = False,
+    memory_limit_mb: int = 100,
     writable_dirs: list = None
 ) -> ExecutionResult:
     """
     使用 bubblewrap 执行代码
-    
-    Args:
-        code: 代码
-        language: "python" 或 "node"
-        timeout: 超时时间
-        network: 是否允许网络
-        writable_dirs: 可写目录列表
-    
-    Returns:
-        ExecutionResult 对象
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 写入代码文件
         ext = ".py" if language == "python" else ".js"
         code_file = os.path.join(tmpdir, f"code{ext}")
         with open(code_file, 'w') as f:
             f.write(code)
         
-        # 构建 bwrap 命令
-        bwrap_cmd = [
+        cmd = "python" if language == "python" else "node"
+        
+        # 内存限制需要 prlimit
+        mem_bytes = memory_limit_mb * 1024 * 1024
+        prefix_cmd = ["prlimit", f"--as={mem_bytes}"]
+        
+        bwrap_cmd = prefix_cmd + [
             "bwrap",
-            # 文件系统隔离
-            "--ro-bind", "/usr", "/usr",           # 只读挂载 /usr
-            "--ro-bind", "/lib", "/lib",           # 只读挂载 /lib
-            "--ro-bind", "/lib64", "/lib64",       # 只读挂载 /lib64
-            "--proc", "/proc",                     # 挂载 /proc
-            "--dev", "/dev",                       # 挂载 /dev
-            "--tmpfs", "/tmp",                     # 可写临时目录
-            "--bind", tmpdir, "/sandbox",          # 挂载代码目录
-            "--chdir", "/sandbox",                 # 切换到代码目录
-            "--unshare-all",                       # 隔离所有命名空间
-            "--die-with-parent",                   # 父进程退出时退出
+            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/lib", "/lib",
+            "--ro-bind", "/lib64", "/lib64",
+            "--proc", "/proc",
+            "--dev-bind", "/dev/null", "/dev/null",
+            "--dev-bind", "/dev/zero", "/dev/zero",
+            "--dev-bind", "/dev/random", "/dev/random",
+            "--dev-bind", "/dev/urandom", "/dev/urandom",
+            "--tmpfs", "/tmp",
+            "--bind", tmpdir, "/sandbox",
+            "--chdir", "/sandbox",
+            "--unshare-all",
+            "--die-with-parent",
         ]
         
-        # 可写目录
         if writable_dirs:
             for dir_path in writable_dirs:
                 bwrap_cmd.extend(["--bind", dir_path, dir_path])
         
-        # 网络隔离
         if not network:
             bwrap_cmd.append("--unshare-net")
         
-        # 执行命令
-        cmd = "python" if language == "python" else "node"
         bwrap_cmd.extend([cmd, f"/sandbox/code{ext}"])
         
         try:
-            import time
             start = time.time()
             
             result = subprocess.run(
@@ -461,10 +445,13 @@ def execute_with_bubblewrap(
             
             elapsed = (time.time() - start) * 1000
             
+            stdout = result.stdout[:max_output_size] if result.stdout else ""
+            stderr = result.stderr[:max_output_size] if result.stderr else ""
+            
             return ExecutionResult(
                 success=result.returncode == 0,
-                stdout=result.stdout,
-                stderr=result.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 return_code=result.returncode,
                 execution_time_ms=elapsed
             )
@@ -481,7 +468,7 @@ def execute_with_bubblewrap(
             return ExecutionResult(
                 success=False,
                 stdout="",
-                stderr=str(e) if isinstance(e, Exception) else String(e),
+                stderr=str(e),
                 return_code=-1,
                 execution_time_ms=0
             )
@@ -491,11 +478,12 @@ def execute_with_bubblewrap(
 
 | 特性 | 说明 |
 |------|------|
-| `--unshare-all` | 隔离所有命名空间（mount, pid, net, user） |
+| `--unshare-all` | 隔离所有命名空间 |
 | `--unshare-net` | 禁用网络 |
 | `--ro-bind` | 只读绑定挂载 |
+| `--dev-bind` | 最小设备集（非完整 /dev） |
 | `--die-with-parent` | 父进程退出时退出 |
-| `--chdir` | 限制工作目录 |
+| `prlimit --as=` | 内存限制 |
 
 ---
 
@@ -573,7 +561,7 @@ def execute_code(
         return ExecutionResult(
             success=False,
             stdout="",
-            stderr=str(e) if isinstance(e, Exception) else String(e),
+            stderr=str(e),
             return_code=-1,
             execution_time_ms=0
         )
@@ -596,19 +584,15 @@ def create_sandbox(**kwargs):
     """
     根据环境自动选择最佳沙箱方案
     """
-    # 方案一：Docker（最安全）
     if shutil.which("docker"):
         return lambda code, **kw: execute_in_docker(code, **{**kwargs, **kw})
     
-    # 方案二：macOS sandbox-exec
     if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
         return lambda code, **kw: execute_with_sandbox_exec(code, **{**kwargs, **kw})
     
-    # 方案三：Linux bubblewrap
     if platform.system() == "Linux" and shutil.which("bwrap"):
         return lambda code, **kw: execute_with_bubblewrap(code, **{**kwargs, **kw})
     
-    # 方案四：仅超时（无隔离）
     return lambda code, **kw: execute_code(code, **{**kwargs, **kw})
 
 # 使用
@@ -627,6 +611,8 @@ result = sandbox('print("Hello!")')
 | sandbox-exec 不存在 | macOS 版本太低 | 升级到 macOS 10.15+ |
 | 网络被拒绝 | 沙箱禁止网络 | 检查 network 参数 |
 | 文件写入失败 | 路径不在允许列表 | 添加到 writable_dirs |
+| 僵尸容器 | Docker 超时未清理 | 代码已自动清理容器 |
+| 内存不足 | prlimit 限制 | 调整 memory_limit_mb |
 
 ---
 
@@ -638,4 +624,4 @@ result = sandbox('print("Hello!")')
 | Node.js | 14+ | 所有 | 执行 JavaScript（可选） |
 | Docker | 20+ | 方案一 | 容器隔离 |
 | bubblewrap | 0.4+ | 方案三 | Linux 沙箱 |
-| socat | 1.7+ | 方案三 | 网络代理 |
+| prlimit | 内置 | 方案三 | 内存限制 |
