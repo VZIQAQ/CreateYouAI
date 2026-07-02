@@ -75,20 +75,20 @@ AI 会读取 `ai-builder` Skill，自动从仓库挑选合适的组合。
 
 ```
 skills/
-├── meta/              🧩 元能力层
+├── meta/              🧩 元能力层（3 个）
 │   ├── ai-builder/      🧩 智能组合
 │   ├── contribute/      🤝 社区贡献
 │   └── mcp-adapter/     🔌 MCP 工具适配
 │
-├── action/            ⚡ 执行能力层
-│   ├── code/            💻 代码操作
-│   ├── web/             🌐 网络操作
-│   ├── file/            📁 文件操作
-│   └── device/          📱 设备交互
+├── action/            ⚡ 执行能力层（12 个）
+│   ├── code/            💻 代码操作（3 个）
+│   ├── web/             🌐 网络操作（2 个）
+│   ├── file/            📁 文件操作（4 个）
+│   └── device/          📱 设备交互（3 个）
 │
-├── core/              🧠 核心能力层
+├── core/              🧠 核心能力层（5 个）
 │
-└── identity/          🎭 身份层
+└── identity/          🎭 身份层（2 个）
 ```
 
 详情见各分类目录的 README.md
